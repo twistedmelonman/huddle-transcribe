@@ -51,29 +51,100 @@ jobs:
       - name: Discover shell scripts
         id: scripts
         run: |
+          # Files that are tracked executable but deliberately not shell.
+          # Anything mode-755 and absent from both this list and the
+          # discovered list fails the coverage assertion below.
+          NON_SHELL_EXECUTABLES=""
+
           scripts=""
           while IFS= read -r -d '' f; do
             # Read only the first line, and only of regular files: a binary
-            # or a symlink to one would otherwise reach grep.
+            # or a symlink to one would otherwise reach the parser.
             [ -f "$f" ] || continue
-            if head -n 1 "$f" | grep -qE '^#!.*[ /](ba)?sh([[:space:]]|$)'; then
-              # The list is carried as a space-separated string through
-              # GITHUB_OUTPUT, so a path containing whitespace would split
-              # into two bogus entries. Fail loudly instead of silently
-              # checking the wrong filenames.
-              case "$f" in
-                *[[:space:]]*)
-                  echo "::error file=$f::script paths must not contain whitespace" >&2
-                  exit 1
-                  ;;
-              esac
-              scripts="${scripts:+$scripts }$f"
+            # tr -d '\r' so a CRLF file is not read as interpreter "bash\r".
+            line=$(head -n 1 "$f" | tr -d '\r')
+            case "$line" in '#!'*) ;; *) continue ;; esac
+
+            # Resolve the interpreter by parsing, not by substring match.
+            # The old regex tested the whole shebang line for `/sh` or
+            # `/bash` anywhere in it, so `#!/usr/bin/awk -f /bin/sh` was
+            # discovered as a shell script and handed to shellcheck.
+            # Take the first whitespace-delimited token after `#!`, then
+            # its basename -- that is the interpreter the kernel execs.
+            rest=${line#'#!'}
+            rest=${rest#"${rest%%[![:space:]]*}"}
+            interp=${rest%%[[:space:]]*}
+            args=${rest#"$interp"}
+            base=${interp##*/}
+
+            # `env` execs its first non-option argument, so the real
+            # interpreter is that, not `env`. Covers `#!/usr/bin/env bash`
+            # and `#!/usr/bin/env -S bash -euo pipefail` alike.
+            if [ "$base" = env ]; then
+              args=${args#"${args%%[![:space:]]*}"}
+              while [ "${args#-}" != "$args" ]; do
+                tok=${args%%[[:space:]]*}
+                args=${args#"$tok"}
+                args=${args#"${args%%[![:space:]]*}"}
+              done
+              base=${args%%[[:space:]]*}
+              base=${base##*/}
             fi
+
+            case "$base" in sh | bash) ;; *) continue ;; esac
+
+            # The list is carried as a space-separated string through
+            # GITHUB_OUTPUT, so a path containing whitespace would split
+            # into two bogus entries. Fail loudly instead of silently
+            # checking the wrong filenames.
+            case "$f" in
+              *[[:space:]]*)
+                echo "::error file=$f::script paths must not contain whitespace" >&2
+                exit 1
+                ;;
+            esac
+            scripts="${scripts:+$scripts }$f"
           done < <(git ls-files -z)
+
           if [ -z "$scripts" ]; then
             echo "::error::no shell scripts discovered; the shebang filter is broken" >&2
             exit 1
           fi
+
+          # Coverage assertion. Discovery failing open is the whole risk of
+          # discovering rather than listing: a script whose shebang this
+          # parser does not recognise ships unlinted and CI still reports
+          # green. Assert instead that every tracked executable is either
+          # discovered or named above as deliberately not shell, so the
+          # failure mode is a red build rather than silence.
+          #
+          # Read the mode listing with `-sz`, not `-s`. Plain `git ls-files
+          # -s` C-quotes any path with a non-ASCII byte or a quote in it
+          # (`"w\303\251ird.sh"`) while the `-z` form above does not, so the
+          # two sides of this comparison would spell the same path
+          # differently: a perfectly good `wéird.sh` is discovered and
+          # linted, then flagged here as uncovered. A false positive on the
+          # check whose whole job is to be trusted is how the check gets
+          # weakened. `-sz` quotes nothing, and splitting on the tab keeps
+          # runs of spaces and embedded tabs intact -- awk's field rebuild
+          # collapsed them.
+          rc=0
+          tab=$'\t'
+          while IFS= read -r -d '' entry; do
+            case "$entry" in '100755 '*) ;; *) continue ;; esac
+            # `<mode> <sha> <stage>\t<path>` -- everything after the first
+            # tab is the path, spaces and all.
+            exe=${entry#*"$tab"}
+            [ -n "$exe" ] || continue
+            case " $scripts " in *" $exe "*) continue ;; esac
+            if [ -n "$NON_SHELL_EXECUTABLES" ]; then
+              case " $NON_SHELL_EXECUTABLES " in *" $exe "*) continue ;; esac
+            fi
+            echo "::error file=$exe::tracked executable not covered by shell discovery; give it a sh/bash shebang or add it to NON_SHELL_EXECUTABLES in this step" >&2
+            rc=1
+          done < <(git ls-files -sz)
+          [ "$rc" -eq 0 ] || exit "$rc"
+
           echo "Discovered: $scripts"
           echo "list=$scripts" >> "$GITHUB_OUTPUT"
 
@@ -106,12 +177,19 @@ jobs:
       # Assert no `# shellcheck disable` directive has crept in. The project
       # standard is to fix the finding, not silence it, and a directive is
       # invisible to a green shellcheck run by construction.
+      #
+      # No `-r`: every entry is a regular file, and if one were ever a
+      # directory `-r` would silently widen the check to its whole tree.
+      # Anchored to a real directive -- comment start, `shellcheck`,
+      # `disable` -- so prose that merely names the directive (this repo's
+      # own docs and error strings do) is not a false failure, while
+      # `#shellcheck disable` and `#   shellcheck   disable` still are.
       - name: Check for shellcheck disable directives
         env:
           SCRIPTS: ${{ steps.scripts.outputs.list }}
         run: |
           read -r -a scripts <<<"$SCRIPTS"
-          if grep -rn 'shellcheck disable' "${scripts[@]}"; then
+          if grep -nE '^[[:space:]]*#[[:space:]]*shellcheck[[:space:]]+disable' "${scripts[@]}"; then
             echo "::error::no '# shellcheck disable' directives are permitted; fix the finding instead" >&2
             exit 1
           fi
@@ -137,6 +215,21 @@ jobs:
 
       # --help must work for every top-level script: it is the one path a
       # user hits before anything else, and it runs no privileged action.
+      #
+      # This step executes repo code, so it states the contract it relies on
+      # rather than assuming it. `--help` must print usage and exit, and
+      # must do so BEFORE any dependency check, any config read, any network
+      # or filesystem write, and any prompt. Every guard here enforces one
+      # half of that:
+      #   - `timeout 10` fails a script that blocks on a prompt or a hang
+      #     instead of stalling the job until the 6h runner limit.
+      #   - `HOME` points at an empty scratch dir, so a script that reads or
+      #     creates `~/.config/...` on the help path is caught here rather
+      #     than silently depending on runner state. Nothing outside that
+      #     dir is written, and it is removed after each script.
+      #   - stdin is `/dev/null`, so a read(1) gets EOF rather than hanging.
+      # A failure here means the script did work on the help path, not that
+      # these guards are too strict -- move the work below the help exit.
       - name: Check --help runs
         env:
           SCRIPTS: ${{ steps.scripts.outputs.list }}
@@ -145,10 +238,21 @@ jobs:
           read -r -a scripts <<<"$SCRIPTS"
           for script in "${scripts[@]}"; do
             case "$script" in tests/*) continue ;; esac
-            if ! "./$script" --help >/dev/null; then
-              echo "::error file=$script::./$script --help exited non-zero" >&2
+            fake_home=$(mktemp -d)
+            # Capture the status directly. Inside `if ! cmd; then`, `$?` is
+            # the negation's 0/1, not the command's code, so 124 would never
+            # be distinguishable from an ordinary failure.
+            status=0
+            timeout 10 env HOME="$fake_home" "./$script" --help >/dev/null </dev/null || status=$?
+            if [ "$status" -ne 0 ]; then
+              if [ "$status" -eq 124 ]; then
+                echo "::error file=$script::./$script --help timed out after 10s; --help must print usage and exit without blocking" >&2
+              else
+                echo "::error file=$script::./$script --help exited $status" >&2
+              fi
               rc=1
             fi
+            rm -rf "$fake_home"
           done
           exit "$rc"
 
