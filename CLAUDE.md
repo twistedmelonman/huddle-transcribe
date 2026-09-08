@@ -244,13 +244,21 @@ The other three workflows are thin caller stubs for reusable workflows in
 that must NOT be added to that file (`secrets: inherit`, `actions/checkout`)
 and why.
 
-**A PR that touches `.github/workflows/` gets no Claude review.**
-`claude-code-action` refuses to run against a PR that modifies its own
-workflow, so `claude-blocking-review` reports a green SKIP having reviewed
-nothing. The step log names the real reason ("workflow-self-modification").
+**A PR that touches `.github/workflows/` gets no Claude review.** The skip
+fires on *any* file matching `.github/workflows/*.yml` or `*.yaml` — not
+only the Claude workflow itself. `claude-code-action` refuses to run against
+a PR that can modify the reviewer, so `claude-blocking-review` reports a
+green SKIP having reviewed nothing. The step log names the real reason
+(`DOC_SKIP_REASON: workflow-self-modification`); the label says
+"self-modification" but the match is the whole directory, so a PR editing
+only `lint.yml` skips too. An 8-second green `claude-review / run-review` is
+the giveaway — a real review cannot finish that fast.
+
 Treat a green blocking-review on a workflow-touching PR as "did not run",
 and get the diff reviewed another way — a local adversarial-reviewer pass
 over the committed diff is what caught the last round of defects here.
+PR #5 is the worked example: it edited only `lint.yml`, went in on a green
+SKIP, and a later local pass found two critical defects in it (#13).
 
 The reusable workflows are tracked on floating tags (`@v3`,
 `@dependabot-auto-merge-v1`) rather than exact versions, deliberately, so
