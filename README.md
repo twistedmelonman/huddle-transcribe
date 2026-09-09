@@ -214,7 +214,9 @@ startup rather than trusted.
 
 ## Configuration
 
-Output directory defaults to `~/Documents/huddle-transcripts`. Override it
+Output directory defaults to a `transcripts/` folder inside the user's
+knowledge base (a Google Drive–synced location), so transcripts sync and
+stay discoverable alongside other notes. Override it
 per-run with `--output-dir`, or persistently via
 `~/.config/huddle-transcribe/config`, which should contain a single
 `OUTPUT_DIR=` line (the file is parsed, not sourced, so it cannot run

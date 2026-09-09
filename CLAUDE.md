@@ -230,7 +230,9 @@ filtering out the lines they are replacing.
 `~/.config/huddle-transcribe/config` is *parsed* with `sed`, not sourced —
 only a single `OUTPUT_DIR=` line is honored. This is deliberate: the file
 cannot execute shell code. Do not "fix" it by switching to `source`.
-Precedence is `--output-dir` > config file > `~/Documents/huddle-transcripts`.
+Precedence is `--output-dir` > config file > the default, a `transcripts/`
+folder inside the user's knowledge base (Google Drive–synced; the literal
+path is not spelled out here since it embeds the account's Drive email).
 
 ## CI
 

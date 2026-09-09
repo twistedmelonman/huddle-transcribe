@@ -159,22 +159,29 @@ reset_media() {
     "$MEDIA/C_merged.m4a" "$MEDIA/D_mic.m4a" "$MEDIA/F_merged.m4a"
 }
 
-# Build a runnable copy with the four environment constants repointed at the
+# Build a runnable copy with the five environment constants repointed at the
 # fixture. Editing constants is how the script is made testable without
 # MacWhisper; the rest of the file is byte-for-byte the shipped script.
+#
+# DEFAULT_OUTPUT_DIR is repointed too, even though every test below passes
+# --output-dir explicitly: the real default embeds the account's Google
+# Drive path (PII), and any invocation missing --output-dir (there is none
+# today, but a future test easily could) must never `mkdir -p` it on the
+# machine actually running the suite.
+OUT="$WORK/out"
 build() {
   local mw="${1:-$BIN/mw}" dest="$WORK/ht.sh"
   sed -e "s|^DB=.*|DB=\"$DB\"|" \
     -e "s|^MEDIA_DIR=.*|MEDIA_DIR=\"$MEDIA\"|" \
     -e "s|^MW_BIN=.*|MW_BIN=\"$mw\"|" \
     -e "s|^CONFIG_FILE=.*|CONFIG_FILE=\"$WORK/no-such-config\"|" \
+    -e "s|^DEFAULT_OUTPUT_DIR=.*|DEFAULT_OUTPUT_DIR=\"$OUT\"|" \
     "$SCRIPT" >"$dest"
   chmod +x "$dest"
   printf '%s\n' "$dest"
 }
 
 HT=$(build)
-OUT="$WORK/out"
 
 # --- helpers -----------------------------------------------------------
 
@@ -417,6 +424,119 @@ fi
 expect_rc "mark-reviewed is idempotent" 0 --mark-reviewed --yes --output-dir "$OUT" aaaa0001
 expect_out "idempotent run reports the audio was already gone" "already gone" \
   --mark-reviewed --yes --output-dir "$OUT" aaaa0001
+
+# --- sidecar title field and _index.md ---------------------------------
+#
+# At this point in $OUT: aaaa0001 (2026-08-27, reviewed) and bbbb0002
+# (2026-08-27, not reviewed) both exist from the transcription tests above.
+
+echo "sidecar title field and _index.md"
+
+meta_aaaa="$OUT/2026-08-27_sre-daily-huddle_aaaa0001.meta.json"
+meta_bbbb="$OUT/2026-08-27_sre-daily-huddle_bbbb0002.meta.json"
+index="$OUT/_index.md"
+
+title_aaaa=$(jq -r '.title' "$meta_aaaa")
+if [[ "$title_aaaa" == "SRE Daily Huddle" ]]; then
+  pass "sidecar records the session title"
+else
+  fail "sidecar records the session title" "got: $title_aaaa"
+fi
+
+exists "_index.md exists after a transcribe run" "$index"
+if [[ -s "$index" ]]; then
+  pass "_index.md is non-empty"
+else
+  fail "_index.md is non-empty"
+fi
+
+index_body=$(cat "$index")
+if grep -qF "SRE Daily Huddle" <<<"$index_body"; then
+  pass "_index.md contains the session title"
+else
+  fail "_index.md contains the session title"
+fi
+if grep -qF "2026-08-27" <<<"$index_body"; then
+  pass "_index.md contains the session date"
+else
+  fail "_index.md contains the session date"
+fi
+if grep -qF "[2026-08-27_sre-daily-huddle_aaaa0001.md](2026-08-27_sre-daily-huddle_aaaa0001.md)" <<<"$index_body"; then
+  pass "_index.md contains a working relative link"
+else
+  fail "_index.md contains a working relative link"
+fi
+
+# Two sessions on different dates: dddd0004 (2026-08-20) is transcribed
+# fresh here so the newer-first ordering assertion is not resting on a
+# same-day tie between aaaa0001 and bbbb0002.
+expect_rc "second-date session transcribes" 0 --yes --output-dir "$OUT" dddd0004
+exists "second-date transcript written" \
+  "$OUT/2026-08-20_tab-title-here_dddd0004.md"
+
+index_body=$(cat "$index")
+line_aaaa=$(grep -nF "sre-daily-huddle_aaaa0001" <<<"$index_body" | cut -d: -f1)
+line_dddd=$(grep -nF "tab-title-here_dddd0004" <<<"$index_body" | cut -d: -f1)
+if [[ -n "$line_aaaa" && -n "$line_dddd" && "$line_aaaa" -lt "$line_dddd" ]]; then
+  pass "_index.md lists the newer session first"
+else
+  fail "_index.md lists the newer session first" "aaaa line $line_aaaa, dddd line $line_dddd"
+fi
+
+# --mark-reviewed on aaaa0001 already happened above; confirm the index
+# reflects the flipped reviewed field for that row and still shows bbbb0002
+# (never mark-reviewed) as not reviewed.
+index_body=$(cat "$index")
+row_aaaa=$(grep -F "sre-daily-huddle_aaaa0001" <<<"$index_body")
+row_bbbb=$(grep -F "sre-daily-huddle_bbbb0002" <<<"$index_body")
+if grep -qF "| yes |" <<<"$row_aaaa"; then
+  pass "_index.md shows the mark-reviewed session as Reviewed: yes"
+else
+  fail "_index.md shows the mark-reviewed session as Reviewed: yes" "row: $row_aaaa"
+fi
+if grep -qF "| no |" <<<"$row_bbbb"; then
+  pass "_index.md shows the unreviewed session as Reviewed: no"
+else
+  fail "_index.md shows the unreviewed session as Reviewed: no" "row: $row_bbbb"
+fi
+
+# --list is read-only and must not create or touch _index.md.
+rm -f "$index"
+"$HT" --list >/dev/null 2>&1 || true
+absent "--list does not create _index.md" "$index"
+
+# Rebuild the index for the remaining assertions below.
+"$HT" --mark-reviewed --yes --output-dir "$OUT" aaaa0001 >/dev/null 2>&1 || true
+
+# A malformed sidecar mixed in with valid ones must not abort the index
+# write -- same precedent as huddle-migrate-md's badjson case.
+printf 'not json at all' >"$OUT/2026-09-01_corrupt_deadbeef.meta.json"
+rc=0
+"$HT" --yes --output-dir "$OUT" bbbb0002 >/dev/null 2>&1 || rc=$?
+if [[ $rc -eq 0 ]]; then
+  pass "a malformed sidecar does not abort the index write"
+else
+  fail "a malformed sidecar does not abort the index write" "exit $rc"
+fi
+index_body=$(cat "$index")
+if grep -qF "SRE Daily Huddle" <<<"$index_body"; then
+  pass "valid sidecars still appear alongside a malformed one"
+else
+  fail "valid sidecars still appear alongside a malformed one"
+fi
+rm -f "$OUT/2026-09-01_corrupt_deadbeef.meta.json"
+
+# A sidecar missing the title field (as huddle-transcribe wrote them before
+# this feature existed) must still produce a readable row via the
+# slug-derived fallback, not an empty or errored cell.
+jq 'del(.title)' "$meta_bbbb" >"$meta_bbbb.tmp" && mv "$meta_bbbb.tmp" "$meta_bbbb"
+"$HT" --yes --output-dir "$OUT" dddd0004 >/dev/null 2>&1 || true
+index_body=$(cat "$index")
+if grep -qF "sre daily huddle" <<<"$index_body"; then
+  pass "a sidecar missing title falls back to a de-slugified title"
+else
+  fail "a sidecar missing title falls back to a de-slugified title"
+fi
 
 # --- huddle-watch ------------------------------------------------------
 #
