@@ -296,7 +296,10 @@ write_index() {
     rm -f "$tmp"
     return 1
   fi
-  mv "$tmp" "$index" || return 1
+  if ! mv "$tmp" "$index"; then
+    rm -f "$tmp"
+    return 1
+  fi
 }
 
 # --- --list ---
