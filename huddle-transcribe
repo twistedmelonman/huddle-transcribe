@@ -607,7 +607,14 @@ if [[ $MARK_REVIEWED -eq 1 ]]; then
 
   mv "$tmp" "$OUT_META"
   trap - EXIT
-  write_index
+  # The mark-reviewed operation is already durably complete at this point;
+  # a failure inside write_index (e.g. ENOSPC, permissions on a synced
+  # Drive folder) must not be reported as this command having failed --
+  # that would tell --mark-reviewed's caller (a human, or a script) the
+  # operation didn't happen, when the sidecar update and audio removal
+  # both already succeeded. The index is a convenience view, rebuilt on
+  # every run, so a stale one self-heals next time.
+  write_index || echo "Warning: failed to regenerate $OUTPUT_DIR/_index.md" >&2
   if [[ $source_was_present -eq 1 ]]; then
     if command -v trash >/dev/null 2>&1; then
       echo "Marked reviewed and moved source to Trash: $SOURCE_PATH"
@@ -696,7 +703,12 @@ fi
 mv "$DOC_TMP" "$OUT_DOC"
 mv "$meta_tmp" "$OUT_META"
 trap - EXIT
-write_index
+# Same reasoning as the --mark-reviewed call site above: the transcript and
+# sidecar are already safely on disk, so a write_index failure must not
+# turn a successful transcription into a nonzero exit -- huddle-watch reads
+# that exit status to decide whether to retry, and retrying a transcription
+# that already succeeded would silently re-run mw against the same audio.
+write_index || echo "Warning: failed to regenerate $OUTPUT_DIR/_index.md" >&2
 
 echo "Transcript written: $OUT_DOC"
 echo "Metadata written:   $OUT_META"
