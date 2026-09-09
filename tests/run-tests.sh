@@ -164,10 +164,17 @@ reset_media() {
 # MacWhisper; the rest of the file is byte-for-byte the shipped script.
 #
 # DEFAULT_OUTPUT_DIR is repointed too, even though every test below passes
-# --output-dir explicitly: the real default embeds the account's Google
-# Drive path (PII), and any invocation missing --output-dir (there is none
-# today, but a future test easily could) must never `mkdir -p` it on the
-# machine actually running the suite.
+# --output-dir explicitly: any invocation missing --output-dir (there is
+# none today, but a future test easily could) must never `mkdir -p` a real
+# Drive folder on the machine actually running the suite. The real script
+# resolves DEFAULT_OUTPUT_DIR in two steps -- a plain fallback assignment,
+# then a conditional override if exactly one GoogleDrive-* mount with a
+# knowledge-base/ directory exists under the real $HOME -- and both sed
+# rules below target both assignments with the SAME safe value, so the
+# result is $OUT regardless of which branch actually fires on this
+# machine. The `if` condition itself still runs the glob against the real
+# $HOME (harmless: it only stats a directory, never writes), but its
+# result can no longer matter.
 OUT="$WORK/out"
 build() {
   local mw="${1:-$BIN/mw}" dest="$WORK/ht.sh"
@@ -176,12 +183,88 @@ build() {
     -e "s|^MW_BIN=.*|MW_BIN=\"$mw\"|" \
     -e "s|^CONFIG_FILE=.*|CONFIG_FILE=\"$WORK/no-such-config\"|" \
     -e "s|^DEFAULT_OUTPUT_DIR=.*|DEFAULT_OUTPUT_DIR=\"$OUT\"|" \
+    -e "s|^  DEFAULT_OUTPUT_DIR=.*|  DEFAULT_OUTPUT_DIR=\"$OUT\"|" \
     "$SCRIPT" >"$dest"
   chmod +x "$dest"
   printf '%s\n' "$dest"
 }
 
 HT=$(build)
+
+# --- DEFAULT_OUTPUT_DIR resolution (unit-style) -------------------------
+#
+# The real script cannot have DEFAULT_OUTPUT_DIR exercised through $HT: the
+# build() sed rewrite above deliberately neutralizes it (both the fallback
+# assignment and the glob-driven override), on purpose, so no test run ever
+# touches whatever Google Drive folder happens to be mounted on the machine
+# actually running the suite. That means the resolution logic itself -- the
+# glob for GoogleDrive-* under CloudStorage, and its fallback -- has to be
+# tested in isolation, against a fake $HOME, with the shipped code
+# extracted verbatim rather than re-implemented here.
+echo "DEFAULT_OUTPUT_DIR resolution"
+
+DOD_UNIT="$WORK/default_output_dir_unit.sh"
+{
+  cat <<'UNIT'
+set -euo pipefail
+HOME="$1"
+UNIT
+  sed -n '/^DEFAULT_OUTPUT_DIR=/,/^fi$/p' "$SCRIPT"
+  cat <<'UNIT'
+printf '%s\n' "$DEFAULT_OUTPUT_DIR"
+UNIT
+} >"$DOD_UNIT"
+
+DOD_HOME="$WORK/dod_home"
+
+# No CloudStorage directory at all (Google Drive never installed): falls
+# back to the plain Documents path, and never mentions a Drive account.
+rm -rf "$DOD_HOME"
+mkdir -p "$DOD_HOME"
+dod_out=$(bash "$DOD_UNIT" "$DOD_HOME")
+if [[ "$dod_out" == "$DOD_HOME/Documents/huddle-transcripts" ]]; then
+  pass "no CloudStorage dir falls back to ~/Documents/huddle-transcripts"
+else
+  fail "no CloudStorage dir falls back to ~/Documents/huddle-transcripts" "$dod_out"
+fi
+
+# A GoogleDrive-* mount exists, but has no knowledge-base directory yet
+# (Drive installed, KB never created): still falls back, rather than
+# pointing at a transcripts/ directory nothing else will ever look inside.
+rm -rf "$DOD_HOME"
+mkdir -p "$DOD_HOME/Library/CloudStorage/GoogleDrive-someone@example.com/My Drive"
+dod_out=$(bash "$DOD_UNIT" "$DOD_HOME")
+if [[ "$dod_out" == "$DOD_HOME/Documents/huddle-transcripts" ]]; then
+  pass "a Drive mount without knowledge-base/ falls back rather than guessing"
+else
+  fail "a Drive mount without knowledge-base/ falls back rather than guessing" "$dod_out"
+fi
+
+# The real case: exactly one GoogleDrive-* mount, with a knowledge-base/
+# directory already present. Resolves to transcripts/ inside it.
+rm -rf "$DOD_HOME"
+mkdir -p "$DOD_HOME/Library/CloudStorage/GoogleDrive-someone@example.com/My Drive/knowledge-base"
+dod_out=$(bash "$DOD_UNIT" "$DOD_HOME")
+want="$DOD_HOME/Library/CloudStorage/GoogleDrive-someone@example.com/My Drive/knowledge-base/transcripts"
+if [[ "$dod_out" == "$want" ]]; then
+  pass "a single Drive mount with knowledge-base/ resolves to its transcripts/"
+else
+  fail "a single Drive mount with knowledge-base/ resolves to its transcripts/" "$dod_out"
+fi
+
+# Two GoogleDrive-* mounts (a machine signed into more than one account):
+# ambiguous, so fall back rather than guessing which account's KB is meant.
+rm -rf "$DOD_HOME"
+mkdir -p "$DOD_HOME/Library/CloudStorage/GoogleDrive-one@example.com/My Drive/knowledge-base"
+mkdir -p "$DOD_HOME/Library/CloudStorage/GoogleDrive-two@example.com/My Drive/knowledge-base"
+dod_out=$(bash "$DOD_UNIT" "$DOD_HOME")
+if [[ "$dod_out" == "$DOD_HOME/Documents/huddle-transcripts" ]]; then
+  pass "two Drive mounts is ambiguous and falls back"
+else
+  fail "two Drive mounts is ambiguous and falls back" "$dod_out"
+fi
+
+rm -rf "$DOD_HOME"
 
 # --- helpers -----------------------------------------------------------
 
