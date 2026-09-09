@@ -6,10 +6,19 @@ DB="$HOME/Library/Application Support/MacWhisper/Database/main.sqlite"
 MEDIA_DIR="$HOME/Library/Application Support/MacWhisper/Database/ExternalMedia"
 CONFIG_FILE="$HOME/.config/huddle-transcribe/config"
 # Lives in the user's Google Drive so transcripts sync automatically and are
-# reachable from the knowledge base. The path embeds their Drive account
-# email, which is why it is not spelled out anywhere else in this repo --
-# docs, tests, and issues all describe it, they never quote it.
-DEFAULT_OUTPUT_DIR="$HOME/Library/CloudStorage/GoogleDrive-andrew.rich@beacon.bio/My Drive/knowledge-base/transcripts"
+# reachable from the knowledge base. macOS names that mount
+# GoogleDrive-<account email>, so the only way to point at it without a
+# config override is to glob for whichever account is signed in -- hardcoding
+# one account's email here would bake a real address into this public repo's
+# source and git history. Falls back to a Drive-free default when no such
+# mount exists (no Google Drive installed, or not yet signed in).
+DEFAULT_OUTPUT_DIR="$HOME/Documents/huddle-transcripts"
+shopt -s nullglob
+drive_dirs=("$HOME/Library/CloudStorage"/GoogleDrive-*)
+shopt -u nullglob
+if [[ ${#drive_dirs[@]} -eq 1 && -d "${drive_dirs[0]}/My Drive/knowledge-base" ]]; then
+  DEFAULT_OUTPUT_DIR="${drive_dirs[0]}/My Drive/knowledge-base/transcripts"
+fi
 MIN_DURATION_SECONDS=300
 MW_BIN="/usr/local/bin/mw"
 
