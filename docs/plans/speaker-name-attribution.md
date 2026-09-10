@@ -225,12 +225,12 @@ about four files, not an invariant — a huddle that discusses this very tool
 will say "speaker 2 is Dave" in the body. A bare `sed 's/Speaker 1/Andrew/g'`
 would corrupt it.
 
-The substitution must apply **only to lines matching `^Speaker [0-9]+$` in
+The substitution must apply **only to lines matching `^\*\*Speaker [0-9]+$` in
 full**, leaving every other line byte-identical:
 
 ```bash
 awk -v map="$MAPPING" '
-  /^Speaker [0-9]+$/ { ... substitute ... ; print; next }
+  /^\*\*Speaker [0-9]+$/ { ... substitute ... ; print; next }
   { print }
 '
 ```

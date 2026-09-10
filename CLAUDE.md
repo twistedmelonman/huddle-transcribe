@@ -154,7 +154,7 @@ different session's sidecar. Do not drop it.
 **The extension is `.md`, and that is a delivery constraint, not a taste
 call.** Transcripts land in Google Drive, whose web viewer previews Markdown
 inline but only offers a download prompt for `.txt`. `mw --format md` differs
-from `--format txt` in exactly one way — the timestamp line is wrapped in
+from `--format txt` only in wrapping the timestamp and speaker lines in
 asterisks (`*00:00-00:06*` rather than `00:06`) — so switching back would
 change almost no bytes while breaking the only reason the format was chosen.
 The variables are `OUT_DOC`/`DOC_TMP`, deliberately not `OUT_TXT`.
@@ -162,9 +162,9 @@ The variables are `OUT_DOC`/`DOC_TMP`, deliberately not `OUT_TXT`.
 `--end-timestamps` renders start-end ranges instead of a bare start. Do not
 use `--format html`: `mw` emits the whole transcript body as a single
 unbroken line, which defeats the line-anchored rewrite that
-`docs/plans/speaker-name-attribution.md` §5.1 depends on. The speaker-label
-line is byte-identical across `txt` and `md`, so that plan's anchors are
-unaffected by this change.
+`docs/plans/speaker-name-attribution.md` §5.1 depends on. Apart from the
+highlighted timestamp and speaker name, the speaker-label line is byte-identical
+across `txt` and `md`, so that plan's anchors are unaffected by this change.
 
 ### huddle-watch requires bash 4.2+, and launchd must be told which bash
 
