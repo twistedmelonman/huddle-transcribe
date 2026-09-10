@@ -683,7 +683,7 @@ if [[ ! -s "$DOC_TMP" ]]; then
   exit 1
 fi
 
-if ! grep -q "^Speaker " "$DOC_TMP" 2>/dev/null; then
+if ! grep -q "^\*\*Speaker " "$DOC_TMP" 2>/dev/null; then
   echo "Warning: no 'Speaker' labels found in output. Check MacWhisper Settings > speaker detection." >&2
 fi
 
