@@ -152,12 +152,12 @@ The agent is triggered three ways, and the redundancy is deliberate.
 `HUDDLE_POLL_INTERVAL` at install time) and is the trigger that actually
 guarantees a transcript appears. `WatchPaths` on the database and its `-wal`
 file usually gets there sooner, but it cannot be relied on alone: launchd
-builds it on kqueue for file paths, so bursts of commits coalesce into one
-wakeup and changes made while the machine is asleep are never reported at
-all. Before the timer existed, the agent ran on three days out of seven and
-individual meetings waited as long as 23 hours. `RunAtLoad` covers the
-remaining gap, a session that became ready while the machine was off or
-logged out.
+makes no delivery guarantee for it, and closely spaced writes can collapse
+into a single wakeup. Before the timer existed, one session became ready ten
+seconds after a watcher run had exited, produced no wakeup at all, and waited
+25 minutes for an unrelated later event; two others waited 9.5 and roughly 23
+hours. `RunAtLoad` covers the remaining gap, a session that became ready
+while the machine was off or logged out.
 
 Logging in does not cause a burst of transcriptions despite `RunAtLoad`:
 the state file records every session already handled, so a load-time run
