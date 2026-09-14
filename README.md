@@ -143,10 +143,26 @@ huddle-watch --uninstall    # unloads and removes the LaunchAgent
 
 `--install` writes
 `~/Library/LaunchAgents/com.smartwatermelon.huddle-transcribe.watch.plist`
-and loads it with `launchctl bootstrap`. `RunAtLoad` is false, so logging in
-never causes a burst of transcriptions. Nothing is installed as a side effect
+and loads it with `launchctl bootstrap`. Nothing is installed as a side effect
 of any other flag. `--uninstall` boots the agent out and removes the plist,
 leaving the state file in place.
+
+The agent is triggered three ways, and the redundancy is deliberate.
+`StartInterval` runs it every 600 seconds (override with
+`HUDDLE_POLL_INTERVAL` at install time) and is the trigger that actually
+guarantees a transcript appears. `WatchPaths` on the database and its `-wal`
+file usually gets there sooner, but it cannot be relied on alone: launchd
+builds it on kqueue for file paths, so bursts of commits coalesce into one
+wakeup and changes made while the machine is asleep are never reported at
+all. Before the timer existed, the agent ran on three days out of seven and
+individual meetings waited as long as 23 hours. `RunAtLoad` covers the
+remaining gap, a session that became ready while the machine was off or
+logged out.
+
+Logging in does not cause a burst of transcriptions despite `RunAtLoad`:
+the state file records every session already handled, so a load-time run
+finds nothing to do. On a fresh install the first run seeds that file
+without transcribing anything (see below).
 
 ### First run seeds, and transcribes nothing
 
