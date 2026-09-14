@@ -202,6 +202,48 @@ coverage that ran). The guard probe uses `--once` with an already-seeded state
 file: `--status` never calls `log()`, and a first `--once` returns down the
 seeding path before logging, so either would pass against the broken script.
 
+### WatchPaths is not a reliable trigger; StartInterval is
+
+The LaunchAgent has three triggers, and dropping any one of them reopens a
+failure that is invisible from the outside.
+
+`StartInterval` (600s, `HUDDLE_POLL_INTERVAL` at install time) is the
+primary one. `WatchPaths` is a latency optimization layered on top, not the
+mechanism — launchd implements it with kqueue for file paths, which reports
+"this changed since you last looked" rather than delivering a queue of
+events. Bursts coalesce into one wakeup, and anything that changes while
+the machine is asleep is never reported, because nothing replays it on
+wake. WAL mode aggravates the coalescing: most commits land in
+`main.sqlite-wal` and only periodically checkpoint into `main.sqlite`.
+
+The symptom is silence, which is why this survived so long. Measured on the
+author's machine with `WatchPaths` alone: launchd fired the job on three
+days out of seven, and individual meetings waited 9.5h and ~23h — both gaps
+spanning a sleep. Every session was ready (`transcriptionDidSucceed=1 AND
+hasBeenDiarized=1`) within ~30s of the recording *starting*, and once the
+job ran the transcript appeared in seconds. The watcher was never slow; it
+was never woken. A job that is not woken logs nothing, so neither the log
+nor `--status` showed a fault. `log show --predicate 'process == "launchd"
+AND eventMessage CONTAINS "huddle"'` is what made it visible.
+
+`RunAtLoad` is true and covers the one gap the other two cannot observe: a
+session that became ready while the machine was off or logged out. It is
+safe only because the state file makes a load-time run a no-op — README's
+older claim that it was false "so logging in never causes a burst" solved
+that with the wrong lever, since seeding plus `done` records already do.
+
+Two details are load-bearing in the code:
+
+- **`jq --argjson`, not `--arg`, for `StartInterval`.** As a string it
+  serializes to `<string>600</string>`, which launchd rejects at load. The
+  timer then silently does not exist and the job is back on `WatchPaths`
+  alone, with a plist that still looks installed. `plutil -extract ... raw`
+  prints both forms identically, so the test asserts against the XML type.
+- **`--status` reports the interval.** A plist generated before this change
+  loads and prints healthy while relying on `WatchPaths` alone, exactly like
+  the stale-interpreter case above, so `--status` names the timer and flags
+  its absence.
+
 ### huddle-watch state
 
 The watcher's own state is one line per session in

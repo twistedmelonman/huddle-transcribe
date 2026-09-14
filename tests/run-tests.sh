@@ -1650,6 +1650,77 @@ STUB
       fail "the plist passes the script as ProgramArguments[1]" \
         "ProgramArguments[1]=$pa1"
     fi
+    # StartInterval is the PRIMARY trigger; WatchPaths only makes it sooner.
+    # launchd's WatchPaths is kqueue-based for file paths, so it coalesces
+    # bursts and reports nothing at all for changes made while the machine
+    # slept. With WatchPaths alone the job went whole days without running
+    # and single meetings waited 9.5h and ~23h to transcribe. A job that is
+    # never woken writes no log line, so nothing but this assertion catches
+    # the plist regressing to WatchPaths alone.
+    start_interval=$(plutil -extract StartInterval raw -o - "$generated" 2>/dev/null || echo "?")
+    if [[ "$start_interval" =~ ^[0-9]+$ ]] && ((start_interval > 0)); then
+      pass "the plist sets a positive StartInterval"
+    else
+      fail "the plist sets a positive StartInterval" \
+        "StartInterval=$start_interval"
+    fi
+    # It must be a plist <integer>. jq --arg would emit <string>600</string>,
+    # which launchd rejects at load -- the timer then silently does not exist
+    # and the job is back on WatchPaths alone, looking installed either way.
+    # `plutil -extract raw` prints both forms identically, so the type is
+    # checked against the XML rather than the extracted value.
+    plist_xml=$(plutil -convert xml1 -o - "$generated" 2>/dev/null || printf '')
+    interval_xml=$(printf '%s\n' "$plist_xml" |
+      grep -A1 '<key>StartInterval</key>' || printf '')
+    if [[ "$interval_xml" == *'<integer>'* ]]; then
+      pass "StartInterval is a plist integer, not a string"
+    else
+      fail "StartInterval is a plist integer, not a string" "$interval_xml"
+    fi
+    # HUDDLE_POLL_INTERVAL must reach the plist. A default-only path would
+    # make the override silently inert.
+    custom_plist_out=$(env PATH="$WBIN:$PATH" HUDDLE_DB="$WDB" \
+      HUDDLE_TRANSCRIBE_BIN="$WBIN/huddle-transcribe" \
+      HUDDLE_STATE_FILE="$WSTATE" HUDDLE_LOG_FILE="$WLOG" \
+      HUDDLE_POLL_INTERVAL=137 \
+      HOME="$WORK/fakehome" "$WATCH" --install 2>&1 || true)
+    custom_interval=$(plutil -extract StartInterval raw -o - "$generated" 2>/dev/null || echo "?")
+    if [[ "$custom_interval" == "137" ]]; then
+      pass "HUDDLE_POLL_INTERVAL is recorded in the generated plist"
+    else
+      fail "HUDDLE_POLL_INTERVAL is recorded in the generated plist" \
+        "StartInterval=$custom_interval ($custom_plist_out)"
+    fi
+    # A non-numeric interval must be refused BEFORE it reaches the plist:
+    # launchd rejects the malformed job at load time, which presents as a
+    # watcher that is installed and never runs.
+    if env PATH="$WBIN:$PATH" HUDDLE_DB="$WDB" \
+      HUDDLE_TRANSCRIBE_BIN="$WBIN/huddle-transcribe" \
+      HUDDLE_STATE_FILE="$WSTATE" HUDDLE_LOG_FILE="$WLOG" \
+      HUDDLE_POLL_INTERVAL="600; touch $WORK/pwned" \
+      HOME="$WORK/fakehome" "$WATCH" --install >/dev/null 2>&1; then
+      fail "a non-numeric HUDDLE_POLL_INTERVAL is rejected" "--install succeeded"
+    elif [[ -e "$WORK/pwned" ]]; then
+      fail "a non-numeric HUDDLE_POLL_INTERVAL is rejected" "injected command ran"
+    else
+      pass "a non-numeric HUDDLE_POLL_INTERVAL is rejected"
+    fi
+    # Restore the default-interval plist for any later assertion.
+    env PATH="$WBIN:$PATH" HUDDLE_DB="$WDB" \
+      HUDDLE_TRANSCRIBE_BIN="$WBIN/huddle-transcribe" \
+      HUDDLE_STATE_FILE="$WSTATE" HUDDLE_LOG_FILE="$WLOG" \
+      HOME="$WORK/fakehome" "$WATCH" --install >/dev/null 2>&1 || true
+    # RunAtLoad catches a session that became ready while the machine was off
+    # or logged out -- the one gap neither WatchPaths nor StartInterval can
+    # observe. It is safe only because the state file makes a load-time run a
+    # no-op; the seeding test below pins that half.
+    run_at_load=$(plutil -extract RunAtLoad raw -o - "$generated" 2>/dev/null || echo "?")
+    if [[ "$run_at_load" == "true" || "$run_at_load" == "1" ]]; then
+      pass "the plist sets RunAtLoad so a missed session is caught up at login"
+    else
+      fail "the plist sets RunAtLoad so a missed session is caught up at login" \
+        "RunAtLoad=$run_at_load"
+    fi
     # The recorded interpreter must actually satisfy the 4.2 requirement --
     # an absolute path that happens to be /bin/bash would still fail.
     if [[ "$pa0" == /*bash ]] && bash_is_modern "$pa0"; then

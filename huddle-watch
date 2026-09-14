@@ -50,6 +50,43 @@ MAX_ATTEMPTS=3
 # even if some unrelated process has since reused the pid.
 LOCK_MAX_AGE_SECONDS=7200
 
+# How often launchd runs the job on a timer, independently of WatchPaths.
+#
+# WatchPaths alone is not a reliable trigger and cannot be made into one.
+# For file paths launchd builds it on kqueue, which reports "this path
+# changed since you last looked" rather than delivering a queue of events:
+# bursts coalesce into a single wakeup, and changes that happen while the
+# machine is asleep are simply never reported, because nothing replays them
+# on wake. WAL mode makes the coalescing worse -- most commits land in
+# main.sqlite-wal and only periodically checkpoint into main.sqlite, so the
+# event stream is exactly the bursty shape kqueue handles worst.
+#
+# Observed on this machine before StartInterval was added: over seven days
+# launchd fired the job on three of them, and individual meetings waited
+# 9.5h and ~23h to be transcribed -- both gaps spanning a sleep. The
+# sessions were ready within ~30s of the recording starting, and once the
+# job did run the transcript appeared in seconds. The watcher was never
+# slow; it was never woken.
+#
+# StartInterval is therefore the primary trigger and WatchPaths is the
+# latency optimisation on top of it: the timer bounds the worst case, and a
+# delivered path event just gets there sooner. 600s bounds the lag at ten
+# minutes, which is well inside the time it takes anyone to want a
+# transcript, while a run with nothing ready costs one SQLite query against
+# a local file and exits silently. Do not remove StartInterval on the
+# grounds that WatchPaths "already covers it" -- it does not, and the
+# failure is invisible because a job that is never woken logs nothing at all.
+POLL_INTERVAL_SECONDS="${HUDDLE_POLL_INTERVAL-600}"
+
+# Validated for the same reason MIN_DURATION_SECONDS is: it is interpolated
+# into the generated plist, and a non-numeric value there produces a plist
+# launchd rejects at load time -- which surfaces as a job that silently never
+# runs, the exact failure this constant exists to fix.
+if ! [[ "$POLL_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] || ((POLL_INTERVAL_SECONDS < 1)); then
+  echo "Error: HUDDLE_POLL_INTERVAL must be a positive whole number of seconds (got '$POLL_INTERVAL_SECONDS')." >&2
+  exit 1
+fi
+
 # Resolve the sibling huddle-transcribe from this script's own location:
 # launchd hands the job a minimal PATH that does not include ~/.local/bin, so
 # `command -v huddle-transcribe` cannot be relied on here.
@@ -104,6 +141,8 @@ Environment overrides (chiefly for testing):
   HUDDLE_STATE_FILE     Seen-session state file
   HUDDLE_LOG_FILE       Log file
   HUDDLE_MIN_DURATION   Minimum session duration in seconds (default 300)
+  HUDDLE_POLL_INTERVAL  Seconds between timed launchd runs, recorded into the
+                        plist by --install (default 600)
   HUDDLE_NO_NOTIFY      Set to any value to suppress macOS notifications
   HUDDLE_NOTIFY_BIN     Use this instead of osascript for notifications
 EOF
@@ -581,6 +620,11 @@ resolve_interpreter() {
 write_plist() {
   local watch_main="$1" watch_wal="$2" json_tmp interp
   interp=$(resolve_interpreter) || return 1
+  # jq --argjson, not --arg: StartInterval must be a plist <integer>. As a
+  # string it converts to <string>600</string>, which launchd rejects when it
+  # loads the job -- leaving the timer silently absent and the watcher back on
+  # WatchPaths alone. POLL_INTERVAL_SECONDS is validated numeric at startup,
+  # so it is safe to inject unquoted here.
   mkdir -p "$(dirname -- "$PLIST")"
   json_tmp=$(mktemp "${PLIST}.json.XXXXXX")
   # ProgramArguments[0] is the interpreter, NOT the script. When argv[0] is an
@@ -594,11 +638,13 @@ write_plist() {
     --arg main "$watch_main" \
     --arg wal "$watch_wal" \
     --arg log "$LAUNCHD_LOG_FILE" \
+    --argjson interval "$POLL_INTERVAL_SECONDS" \
     '{
       Label: $label,
       ProgramArguments: [$interp, $prog, "--once"],
       WatchPaths: [$main, $wal],
-      RunAtLoad: false,
+      StartInterval: $interval,
+      RunAtLoad: true,
       StandardOutPath: $log,
       StandardErrorPath: $log
     }' >"$json_tmp"; then
@@ -628,13 +674,21 @@ do_install() {
   # only main.sqlite fires late or not at all.
   #
   # -shm is deliberately NOT watched. It is the WAL shared-memory index, and
-  # SQLite mutates it through an mmap rather than through write(2). FSEvents,
-  # which is what WatchPaths is built on, reports filesystem operations, so
-  # mmap stores to -shm are not a reliable trigger and may produce no event
-  # at all. It also carries no information -wal does not: every commit that
-  # touches -shm also appends to -wal, which does fire. Adding it would at
-  # best duplicate wakeups and at worst suggest a guarantee FSEvents does not
-  # make.
+  # SQLite mutates it through an mmap rather than through write(2). WatchPaths
+  # reports filesystem operations, so mmap stores to -shm are not a reliable
+  # trigger and may produce no event at all. It also carries no information
+  # -wal does not: every commit that touches -shm also appends to -wal, which
+  # does fire. Adding it would at best duplicate wakeups and at worst suggest
+  # a guarantee the mechanism does not make.
+  #
+  # RunAtLoad is true, which is safe ONLY because of the state file. A load
+  # happens at login and on every --install, and without a record of what has
+  # already been transcribed that would re-run the backlog each time. The
+  # first-run seeding gate handles the fresh-install case (it records the
+  # ready sessions and transcribes none of them) and `done` records handle
+  # every load after that, so a load-time run finds nothing to do. Its value
+  # is catching up a session that became ready while the machine was off or
+  # logged out, which neither WatchPaths nor StartInterval can observe.
   write_plist "$DB" "${DB}-wal" || exit 1
   mkdir -p "$(dirname -- "$LOG_FILE")"
   local uid
@@ -716,6 +770,20 @@ do_status() {
     elif [[ -n "$plist_interp" ]]; then
       echo "Interp:    (none -- plist runs $plist_interp via its shebang)"
       echo "           Stale plist: launchd may use macOS bash 3.2 and fail."
+      echo "           Repair: $0 --install"
+    fi
+    # A plist predating StartInterval loads and prints healthy while relying
+    # on WatchPaths alone, which drops events across sleep -- the job then
+    # goes hours without running and logs nothing, so nothing else here would
+    # reveal it. Naming the timer explicitly makes that stale plist visible.
+    local plist_interval
+    plist_interval=$(plutil -extract StartInterval raw -o - "$PLIST" 2>/dev/null || printf '')
+    if [[ "$plist_interval" =~ ^[0-9]+$ ]]; then
+      echo "Poll:      every ${plist_interval}s (plus WatchPaths)"
+    else
+      echo "Poll:      (none -- plist relies on WatchPaths alone)"
+      echo "           Stale plist: missed events are not retried and a"
+      echo "           meeting can wait hours to transcribe."
       echo "           Repair: $0 --install"
     fi
   fi
