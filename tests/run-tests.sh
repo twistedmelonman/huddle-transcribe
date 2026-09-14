@@ -1651,12 +1651,11 @@ STUB
         "ProgramArguments[1]=$pa1"
     fi
     # StartInterval is the PRIMARY trigger; WatchPaths only makes it sooner.
-    # launchd's WatchPaths is kqueue-based for file paths, so it coalesces
-    # bursts and reports nothing at all for changes made while the machine
-    # slept. With WatchPaths alone the job went whole days without running
-    # and single meetings waited 9.5h and ~23h to transcribe. A job that is
-    # never woken writes no log line, so nothing but this assertion catches
-    # the plist regressing to WatchPaths alone.
+    # launchd makes no delivery guarantee for WatchPaths -- one measured
+    # session became ready ten seconds after a run exited, produced no
+    # wakeup, and waited 25 minutes; others waited 9.5h and ~23h. A job that
+    # is never woken writes no log line, so nothing but this assertion
+    # catches the plist regressing to WatchPaths alone.
     start_interval=$(plutil -extract StartInterval raw -o - "$generated" 2>/dev/null || echo "?")
     if [[ "$start_interval" =~ ^[0-9]+$ ]] && ((start_interval > 0)); then
       pass "the plist sets a positive StartInterval"

@@ -52,21 +52,27 @@ LOCK_MAX_AGE_SECONDS=7200
 
 # How often launchd runs the job on a timer, independently of WatchPaths.
 #
-# WatchPaths alone is not a reliable trigger and cannot be made into one.
-# For file paths launchd builds it on kqueue, which reports "this path
-# changed since you last looked" rather than delivering a queue of events:
-# bursts coalesce into a single wakeup, and changes that happen while the
-# machine is asleep are simply never reported, because nothing replays them
-# on wake. WAL mode makes the coalescing worse -- most commits land in
-# main.sqlite-wal and only periodically checkpoint into main.sqlite, so the
-# event stream is exactly the bursty shape kqueue handles worst.
+# WatchPaths alone is not a reliable trigger. launchd makes no delivery
+# guarantee for it: it reports that a path changed rather than delivering a
+# queue of events, so closely spaced writes can collapse into a single
+# wakeup. WAL mode makes that shape more likely, since most commits land in
+# main.sqlite-wal and only periodically checkpoint into main.sqlite.
 #
-# Observed on this machine before StartInterval was added: over seven days
-# launchd fired the job on three of them, and individual meetings waited
-# 9.5h and ~23h to be transcribed -- both gaps spanning a sleep. The
-# sessions were ready within ~30s of the recording starting, and once the
-# job did run the transcript appeared in seconds. The watcher was never
-# slow; it was never woken.
+# The direct evidence, one session, no inference. 679b5e4d became ready
+# (dateUpdated 2026-09-14 15:34:36 UTC = 08:34:36 PDT) ten seconds after a
+# watcher run had exited at 08:34:26 -- one of five fires in the preceding
+# 90 seconds. The next run was at 09:02:21. The write that flipped the
+# session to ready produced no wakeup, and the transcript waited 25 minutes
+# for an unrelated later event. No sleep was involved.
+#
+# Measured as dateUpdated -> the watcher's own log line, the lags before
+# StartInterval ranged from seconds to 9.5h and ~23h. Once the job ran the
+# transcript appeared in seconds every time: the watcher was never slow, it
+# was not being woken.
+#
+# Note dateCreated is the END of the recording, not the start -- the row
+# appears when MacWhisper finishes capturing -- so measure against
+# dateUpdated, which is when the readiness flags settle.
 #
 # StartInterval is therefore the primary trigger and WatchPaths is the
 # latency optimisation on top of it: the timer bounds the worst case, and a

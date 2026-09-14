@@ -19,7 +19,7 @@ a README, a LICENSE, and the CI workflows.
 ## Commands
 
 ```bash
-./tests/run-tests.sh                          # 237 behavioral tests (some skip off macOS)
+./tests/run-tests.sh                          # 261 behavioral tests (some skip off macOS)
 shellcheck -S info huddle-transcribe huddle-watch huddle-migrate-md tests/run-tests.sh
 shfmt -i 2 -ci -d huddle-transcribe huddle-watch huddle-migrate-md tests/run-tests.sh
 shfmt -i 2 -ci -w huddle-transcribe huddle-watch huddle-migrate-md tests/run-tests.sh
@@ -209,22 +209,49 @@ failure that is invisible from the outside.
 
 `StartInterval` (600s, `HUDDLE_POLL_INTERVAL` at install time) is the
 primary one. `WatchPaths` is a latency optimization layered on top, not the
-mechanism — launchd implements it with kqueue for file paths, which reports
-"this changed since you last looked" rather than delivering a queue of
-events. Bursts coalesce into one wakeup, and anything that changes while
-the machine is asleep is never reported, because nothing replays it on
-wake. WAL mode aggravates the coalescing: most commits land in
-`main.sqlite-wal` and only periodically checkpoint into `main.sqlite`.
+mechanism. launchd documents no delivery guarantee for it: it reports that
+a path changed rather than delivering a queue of events, so closely spaced
+writes can collapse into a single wakeup. WAL mode makes that shape more
+likely, since most commits land in `main.sqlite-wal` and only periodically
+checkpoint into `main.sqlite`.
 
-The symptom is silence, which is why this survived so long. Measured on the
-author's machine with `WatchPaths` alone: launchd fired the job on three
-days out of seven, and individual meetings waited 9.5h and ~23h — both gaps
-spanning a sleep. Every session was ready (`transcriptionDidSucceed=1 AND
-hasBeenDiarized=1`) within ~30s of the recording *starting*, and once the
-job ran the transcript appeared in seconds. The watcher was never slow; it
-was never woken. A job that is not woken logs nothing, so neither the log
-nor `--status` showed a fault. `log show --predicate 'process == "launchd"
-AND eventMessage CONTAINS "huddle"'` is what made it visible.
+**The direct evidence, one session, no inference:** `679b5e4d` became ready
+(`dateUpdated` 2026-09-14 15:34:36 UTC = 08:34:36 PDT) ten seconds after a
+watcher run had exited at 08:34:26 — one of five fires between 08:32:58 and
+08:34:26. The very next run was at 09:02:21. So the write that flipped the
+session to ready produced no wakeup, and the transcript waited 25 minutes
+for an unrelated later event. No sleep was involved; `pmset -g log` shows
+no Sleep/Wake in that window.
+
+The wider pattern, measured as `dateUpdated` → the watcher's own
+transcription log line:
+
+| Session   | Lag        |
+|-----------|------------|
+| e3cfa4e8  | seconds    |
+| 55ec840b  | seconds    |
+| 85276ae5  | 12 min     |
+| 679b5e4d  | 25 min     |
+| d300bb19  | 9.5 h      |
+| 4c759a58  | ~23 h      |
+
+Once the job ran, the transcript appeared in seconds every time. The
+watcher was never slow; it was not being woken.
+
+Two cautions for anyone re-investigating this:
+
+- **`dateCreated` is the END of the recording, not the start.** A session
+  row appears when MacWhisper finishes capturing. `dateUpdated` lands a few
+  seconds later and is when the readiness flags settle. Comparing a
+  transcription time against `dateCreated` therefore looks like the watcher
+  ran *before* the meeting, which is what makes the timeline confusing at
+  first read.
+- **Do not measure this by counting launchd fires.** `log show --predicate
+  'process == "launchd"'` has bounded retention and does not preserve a
+  reliable per-day fire count; it also logs "service inactive" at job
+  *exit*, not start. Sparse days there are not evidence of dropped events.
+  Compare database row timestamps to the watcher's own log instead, which
+  is what the table above does.
 
 `RunAtLoad` is true and covers the one gap the other two cannot observe: a
 session that became ready while the machine was off or logged out. It is
@@ -243,6 +270,11 @@ Two details are load-bearing in the code:
   loads and prints healthy while relying on `WatchPaths` alone, exactly like
   the stale-interpreter case above, so `--status` names the timer and flags
   its absence.
+
+`HUDDLE_POLL_INTERVAL` is read only by `--install`, which bakes the value
+into the plist as `StartInterval`. It is deliberately not injected into the
+plist's `EnvironmentVariables`, so a launchd-spawned `--once` never sees it;
+changing the interval means re-running `--install`.
 
 ### huddle-watch state
 
