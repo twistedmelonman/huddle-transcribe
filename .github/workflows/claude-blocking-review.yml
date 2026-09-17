@@ -27,7 +27,7 @@ jobs:
   # reports success without having reviewed anything. Get that diff
   # reviewed some other way.
   claude-review:
-    uses: smartwatermelon/github-workflows/.github/workflows/claude-blocking-review.yml@v3 # zizmor: ignore[unpinned-uses]
+    uses: smartwatermelon/github-workflows/.github/workflows/claude-blocking-review.yml@v3
     with:
       pr_number: ${{ github.event.pull_request.number }}
     secrets:
