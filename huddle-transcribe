@@ -516,6 +516,41 @@ OUT_BASENAME="${SESSION_DATE_ONLY}_${SLUG}_${SID:0:8}"
 OUT_DOC="$OUTPUT_DIR/${OUT_BASENAME}.md"
 OUT_META="$OUTPUT_DIR/${OUT_BASENAME}.meta.json"
 
+# --mark-reviewed acts on a sidecar written by an earlier run, so it must find
+# that file rather than the name today's title would produce. MacWhisper keeps
+# titling a session after its transcript is written -- a session captured as
+# "Untitled" is routinely named minutes later -- and the derived basename then
+# points at a file that never existed, stranding the audio forever.
+#
+# Resolve by the session id suffix instead, which is the stable part of the
+# name. This is the primary lookup, not a fallback: the glob also matches the
+# derived path whenever the title has not changed, so there is one code path.
+# Two sidecars can share an 8-hex-char suffix, so an ambiguous match refuses
+# rather than guesses; the session_id equality check below is what ultimately
+# authorizes the delete, and it still runs on whatever the glob resolved.
+if [[ $MARK_REVIEWED -eq 1 ]]; then
+  shopt -s nullglob
+  id_matches=("$OUTPUT_DIR"/*_"${SID:0:8}".meta.json)
+  shopt -u nullglob
+  if [[ ${#id_matches[@]} -gt 1 ]]; then
+    echo "Error: ${#id_matches[@]} sidecars match session ${SID:0:8} in $OUTPUT_DIR:" >&2
+    printf '  %s\n' "${id_matches[@]}" >&2
+    echo "Refusing to delete source audio. Remove the stale sidecar and re-run." >&2
+    exit 1
+  fi
+  if [[ ${#id_matches[@]} -eq 1 ]]; then
+    OUT_META="${id_matches[0]}"
+    # The sidecar names its own transcript. Deriving it from the sidecar's
+    # basename would work today but re-encodes the naming scheme in a second
+    # place; output_file is the field the write path already records, and the
+    # -s guard below depends on this pointing at the real transcript.
+    meta_output_file=$(jq -r '.output_file // empty' "$OUT_META" 2>/dev/null || true)
+    if [[ -n "$meta_output_file" ]]; then
+      OUT_DOC="$OUTPUT_DIR/$meta_output_file"
+    fi
+  fi
+fi
+
 echo "Session:  ${SID:0:8}"
 echo "Date:     $SDATE"
 SDUR_PRETTY=$(fmt_duration "$SDUR")
@@ -548,9 +583,10 @@ if [[ $MARK_REVIEWED -eq 1 ]]; then
     echo "Error: no metadata sidecar found at $OUT_META. Transcribe first." >&2
     exit 1
   fi
-  # The sidecar is matched by filename, which is derived from date + title.
+  # The sidecar is located by session id suffix (see above), which is an
+  # 8-hex-char prefix of a longer id and so is not by itself proof of identity.
   # Confirm it actually describes the session just resolved before deleting
-  # anything: a retitled or same-day session could otherwise map onto a
+  # anything: a same-day or suffix-colliding session could otherwise map onto a
   # sidecar belonging to a different recording.
   meta_session_id=$(jq -r '.session_id // empty' "$OUT_META" 2>/dev/null || true)
   if [[ -z "$meta_session_id" ]]; then

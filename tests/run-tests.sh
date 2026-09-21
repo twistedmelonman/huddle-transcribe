@@ -508,6 +508,57 @@ expect_rc "mark-reviewed is idempotent" 0 --mark-reviewed --yes --output-dir "$O
 expect_out "idempotent run reports the audio was already gone" "already gone" \
   --mark-reviewed --yes --output-dir "$OUT" aaaa0001
 
+# --- --mark-reviewed after a retitle ------------------------------------
+#
+# MacWhisper keeps titling a session after its transcript is written, so the
+# basename derived from today's title can name a file that never existed.
+# The sidecar must still be found, by session id suffix.
+
+# Built on ffff0006, which no other test transcribes, so the pair below is
+# the only thing that names it. Reusing a session whose sidecar later tests
+# read would rename that sidecar out from under them.
+retitle_meta="$OUT/2026-08-19_stale-title_ffff0006.meta.json"
+retitle_doc="$OUT/2026-08-19_stale-title_ffff0006.md"
+printf 'transcript body\n' >"$retitle_doc"
+cat >"$retitle_meta" <<'RETITLE_META'
+{
+  "session_id": "ffff0006",
+  "date": "2026-08-19",
+  "duration_seconds": 700,
+  "source_file": "F_merged.m4a",
+  "output_file": "2026-08-19_stale-title_ffff0006.md",
+  "title": "Stale Title",
+  "reviewed": false,
+  "deleted_source": false
+}
+RETITLE_META
+
+# --dry-run must report the resolved transcript, not the one today's title
+# would derive ("Hostile Duration" -> 2026-08-19_hostile-duration_ffff0006.md).
+expect_out "dry-run reports the retitled transcript" "2026-08-19_stale-title_ffff0006.md" \
+  --dry-run --mark-reviewed --yes --output-dir "$OUT" ffff0006
+exists "dry-run after retitle keeps the audio" "$MEDIA/F_merged.m4a"
+
+# An ambiguous id suffix must refuse rather than pick one.
+cp "$retitle_meta" "$OUT/2026-08-18_decoy_ffff0006.meta.json"
+expect_rc "ambiguous id suffix refuses" 1 \
+  --mark-reviewed --yes --output-dir "$OUT" ffff0006
+exists "ambiguous id suffix keeps the audio" "$MEDIA/F_merged.m4a"
+rm -f "$OUT/2026-08-18_decoy_ffff0006.meta.json"
+
+# With one match, the retitled session marks reviewed and loses its audio.
+expect_rc "retitled session marks reviewed" 0 \
+  --mark-reviewed --yes --output-dir "$OUT" ffff0006
+absent "retitled session removes the audio" "$MEDIA/F_merged.m4a"
+retitle_flags=$(jq -r '[.reviewed, .deleted_source] | join(",")' "$retitle_meta")
+if [[ "$retitle_flags" == "true,true" ]]; then
+  pass "retitled sidecar records reviewed and deleted_source"
+else
+  fail "retitled sidecar records reviewed and deleted_source" "flags: $retitle_flags"
+fi
+rm -f "$retitle_meta" "$retitle_doc"
+reset_media
+
 # --- sidecar title field and _index.md ---------------------------------
 #
 # At this point in $OUT: aaaa0001 (2026-08-27, reviewed) and bbbb0002
