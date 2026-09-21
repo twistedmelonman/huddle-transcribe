@@ -234,18 +234,63 @@ Output directory defaults to a `transcripts/` folder inside the user's
 knowledge base (a Google Drive–synced location), so transcripts sync and
 stay discoverable alongside other notes. Override it
 per-run with `--output-dir`, or persistently via
-`~/.config/huddle-transcribe/config`, which should contain a single
-`OUTPUT_DIR=` line (the file is parsed, not sourced, so it cannot run
-arbitrary shell code) — useful for pointing at a synced folder such as
-Google Drive or Dropbox:
+`~/.config/huddle-transcribe/config` (the file is parsed, not sourced, so it
+cannot run arbitrary shell code) — useful for pointing at a synced folder
+such as Google Drive or Dropbox:
 
 ```bash
 OUTPUT_DIR="/path/to/transcripts"
 ```
 
+`OUTPUT_DIR` is the only key the script itself reads; a second
+`OUTPUT_DIR=` line wins over the first. The `huddle-review` skill reads three
+further keys from the same file — see [Reviewing a transcript](#reviewing-a-transcript).
+
 A leading `~` is expanded. Because the file is parsed rather than sourced,
 shell variables such as `$HOME` are *not* expanded — write the path out or
 use `~`.
+
+## Reviewing a transcript
+
+A transcript is source material: diarized, unattributed, and long. The
+`skills/huddle-review` skill drives the pass that turns one into a note worth
+reading later — attribute the `Speaker N` labels, synthesize the decisions and
+open questions, file it in a knowledge base, and only then offer to release the
+source audio.
+
+It is written for [Claude Code](https://claude.com/claude-code) and ships here
+rather than in a dotfiles repo, so the procedure travels with the tool that
+produces its input. Install it by symlinking into the skills directory:
+
+```bash
+ln -s "$(pwd)/skills/huddle-review" ~/.claude/skills/huddle-review
+```
+
+Then ask for a review — "the huddle transcript is ready", "index today's
+transcript" — and it runs.
+
+### Skill configuration
+
+The skill reads three optional keys from the same config file, none of which
+the script itself uses:
+
+| Key | Default |
+| --- | --- |
+| `KB_ROOT` | the parent directory of `OUTPUT_DIR` |
+| `KB_NOTES_DIR` | `$KB_ROOT/topics/meetings` |
+| `KB_INDEX` | `$KB_ROOT/INDEX.md` |
+
+The defaults describe a knowledge base holding `transcripts/`, `topics/`, and
+an `INDEX.md` registry. A different layout needs the keys set; the skill never
+writes outside `KB_ROOT`, and stops rather than creating a knowledge base that
+is not there.
+
+Two behaviors are deliberate and worth knowing before use:
+
+- It never edits `transcripts/_index.md`. That file is generated here, and
+  every run overwrites it.
+- It never deletes audio on its own. `--mark-reviewed` is offered as a final
+  question, after the note exists.
 
 ## Development
 

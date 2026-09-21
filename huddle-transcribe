@@ -25,7 +25,10 @@ MW_BIN="/usr/local/bin/mw"
 OUTPUT_DIR="$DEFAULT_OUTPUT_DIR"
 if [[ -f "$CONFIG_FILE" ]]; then
   # Parsed with sed rather than sourced, deliberately: the config file
-  # cannot execute shell code. Only a single OUTPUT_DIR= line is honored.
+  # cannot execute shell code. OUTPUT_DIR is the only key this script reads,
+  # and a later OUTPUT_DIR= line wins over an earlier one. The file is shared
+  # with the huddle-review skill, which reads its own KB_* keys from it and
+  # must honor the same parse-never-source rule.
   # The value is taken literally and never evaluated, so a path containing
   # `$VAR` or backticks is treated as those characters -- they are legal in
   # a directory name, and are not expanded or run. It is used only inside
