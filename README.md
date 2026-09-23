@@ -289,8 +289,10 @@ Two behaviors are deliberate and worth knowing before use:
 
 - It never edits `transcripts/_index.md`. That file is generated here, and
   every run overwrites it.
-- It never deletes audio on its own. `--mark-reviewed` is offered as a final
-  question, after the note exists.
+- It deletes audio only with your yes. By default `--mark-reviewed` is offered
+  as a final question, after the note exists. To answer it once for good, set
+  `RELEASE_AUDIO=auto` in `~/.config/huddle-transcribe/config`; the skill then
+  runs it after the note is written and registered.
 
 ## Development
 
