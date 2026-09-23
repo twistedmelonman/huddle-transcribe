@@ -17,8 +17,8 @@ later: a synthesized note, registered where a future reader will find it.
 
 ## Configuration
 
-Paths come from `~/.config/huddle-transcribe/config`, the same file
-`huddle-transcribe` reads. Four keys matter here; all are optional.
+Settings come from `~/.config/huddle-transcribe/config`, the same file
+`huddle-transcribe` reads. Five keys matter here; all are optional.
 
 | Key | Default |
 | --- | --- |
@@ -26,6 +26,7 @@ Paths come from `~/.config/huddle-transcribe/config`, the same file
 | `KB_ROOT` | the parent directory of `OUTPUT_DIR` |
 | `KB_NOTES_DIR` | `$KB_ROOT/topics/meetings` |
 | `KB_INDEX` | `$KB_ROOT/INDEX.md` |
+| `RELEASE_AUDIO` | `ask`; `auto` releases the audio without asking (see step 6) |
 
 Read the file with the Read tool and match `^KEY=` lines literally. **Never
 source it and never pass it to a shell.** It is user-editable text, and the
@@ -33,7 +34,7 @@ script deliberately parses rather than sources it so a config file cannot
 execute code. Honor that here. A leading `~` arrives literally and means
 `$HOME`; expand only that. Take every other value exactly as written.
 
-The script itself honors only `OUTPUT_DIR`. The other three keys are read by
+The script itself honors only `OUTPUT_DIR`. The other four keys are read by
 this skill. If a key is absent, use the default in the table — do not invent a
 layout, and do not write outside `KB_ROOT`.
 
@@ -134,28 +135,36 @@ the thing the index was for.
 and carries a header saying so; the next run overwrites any edit. The new
 transcript is already listed there.
 
-### 6. Offer to release the audio
-
-Only after the note exists, and only as a question:
+### 6. Release the audio
 
 ```bash
 huddle-transcribe --mark-reviewed <session-id>
 ```
 
-**This deletes the source `.m4a`** — to the Trash where `trash(1)` exists,
-otherwise outright. Say that plainly when offering. Never run it unprompted,
-never bundle it into another step, and never add `--yes` on the user's behalf.
+**This deletes the source `.m4a`**: to the Trash where `trash(1)` exists,
+otherwise outright. Pass the **session id**, not the date, for the reason in
+step 1.
 
-Pass the **session id**, not the date, for the reason in step 1.
+Only after the note exists **and** is registered (step 5). Never after step 2
+stopped on a silence transcript: there the audio is the only useful copy.
 
-If the user declines, the transcript and audio both stay. That is a valid end
-state.
+What happens next depends on `RELEASE_AUDIO`:
+
+- **`ask`, absent, or any other value:** offer it as a question. Say plainly
+  that it deletes the audio. Never run it unprompted, never bundle it into
+  another step, and never add `--yes` on the user's behalf. If the user
+  declines, the transcript and audio both stay. That is a valid end state.
+- **`auto`:** the user has already said yes, once, in their own config. Run it
+  with `--yes` as the last step, then report the path the script says it
+  removed. If the script refuses (a sidecar or session-id guard fails), report
+  the refusal as it is. Do not work around it.
 
 ## Boundaries
 
 - Read the transcript; never edit it. It is the record of what was said.
 - Write only inside `KB_ROOT`.
-- Deleting audio requires an explicit yes, every time.
+- Deleting audio requires an explicit yes: every time, or once as
+  `RELEASE_AUDIO=auto` in the config. Nothing else counts as a yes.
 - If something in the transcript is ambiguous, say so in the note rather than
   resolving it silently. A note that marks its own uncertainty stays useful;
   one that guesses confidently does not.
