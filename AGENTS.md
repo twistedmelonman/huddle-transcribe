@@ -4,25 +4,28 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## What this is
 
-Three Bash scripts. `huddle-transcribe` wraps MacWhisper Pro's `mw` CLI: it
+Four Bash scripts. `huddle-transcribe` wraps MacWhisper Pro's `mw` CLI: it
 picks a meeting recording out of MacWhisper's own SQLite database, transcribes
 it with speaker diarization, and writes a `.md` transcript plus a
 `.meta.json` sidecar. `huddle-watch` drives it from launchd, waking on a
 database change and transcribing each session that has newly become ready.
 `huddle-migrate-md` is a one-shot: it adopts `.txt` transcripts written
 before the Markdown switch by renaming them and repointing their sidecars.
+`huddle-mic-guard` is a notify-only launchd job: it alerts when a Slack
+huddle has ended but MacWhisper has not saved a recording, i.e. it is
+probably still capturing the room.
 
 There is no build step and no package manager. The test suite is a single
-Bash script, `tests/run-tests.sh`; the rest of the repo is the three scripts,
+Bash script, `tests/run-tests.sh`; the rest of the repo is the four scripts,
 a README, a LICENSE, and the CI workflows.
 
 ## Commands
 
 ```bash
-./tests/run-tests.sh                          # 261 behavioral tests (some skip off macOS)
-shellcheck -S info huddle-transcribe huddle-watch huddle-migrate-md tests/run-tests.sh
-shfmt -i 2 -ci -d huddle-transcribe huddle-watch huddle-migrate-md tests/run-tests.sh
-shfmt -i 2 -ci -w huddle-transcribe huddle-watch huddle-migrate-md tests/run-tests.sh
+./tests/run-tests.sh                          # 318 behavioral tests (some skip off macOS)
+shellcheck -S info huddle-transcribe huddle-watch huddle-migrate-md huddle-mic-guard tests/run-tests.sh
+shfmt -i 2 -ci -d huddle-transcribe huddle-watch huddle-migrate-md huddle-mic-guard tests/run-tests.sh
+shfmt -i 2 -ci -w huddle-transcribe huddle-watch huddle-migrate-md huddle-mic-guard tests/run-tests.sh
 ```
 
 CI discovers scripts by shebang over git-tracked files, so a new script is
@@ -46,7 +49,7 @@ it, and keep `binary_next_line = false` in agreement with CI's flags.
 **Every extensionless script must be named in `.editorconfig`'s last
 section.** The repo's scripts have no `.sh` suffix, so they match neither
 `[*]` nor `[*.{sh,bash}]` — only the literal
-`[{huddle-transcribe,huddle-watch,huddle-migrate-md}]` list. A script left
+`[{huddle-transcribe,huddle-watch,huddle-migrate-md,huddle-mic-guard}]` list. A script left
 out of it gets shfmt's *tab* default, and the failure is quiet in the worst
 way: the pre-commit hook reformats the whole file to tabs, reports "All
 checked files are clean", and aborts the commit. Nothing says the file was
@@ -402,6 +405,31 @@ read, and the mismatch comparison against an empty `meta_out`) — verified by
 disabling each in turn. That redundancy is deliberate, since this is the
 guard whose failure renames a file the tool does not own. It also means the
 sidecar-less tests pin the outcome rather than any one branch.
+
+## huddle-mic-guard
+
+Notify-only: it reads coreaudiod's `PublishRecordingClientInfo` events via
+`log show`, resolves each pid with `ps`, and raises a detached
+`display alert ... as critical`. It never stops MacWhisper or Slack. Three
+facts are load-bearing, each verified against the 2026-09-24 overrun:
+
+- **MacWhisper's own mic `no` is not "recording stopped".** That day its
+  Bluetooth mic died at 08:15:50, it reported `running: no`, and it kept
+  recording on a fallback mic until 08:41:16. Never use it as the stop signal.
+- **The stop signal is `recordedmeeting.dateCreated`** (and
+  `systemaudiorecording.dateCreated`): 15:41:16.343 UTC = 08:41:16 PDT, the
+  moment capture stopped. `session.dateCreated` lags it by the transcription
+  time (15:43:45 that day) and must not be used here. The guard compares
+  against MacWhisper's own `yes`, not Slack's release, so stopping MacWhisper
+  a moment before leaving the huddle does not alert.
+- **The session start is Slack's FIRST `yes`**, walking back to a `no` held
+  for the settle time. Slack flaps for ~7 s at huddle start, past
+  MacWhisper's own `yes`, so anchoring on the latest `yes` misses it.
+
+The plist sets `AbandonProcessGroup`, since launchd otherwise kills the
+detached alert when the job exits. `HUDDLE_GUARD_NOW` fixes the clock for
+tests and bounds the database query, so a past day can be replayed with
+`--dry-run` against the real database.
 
 ## Known state
 
