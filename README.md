@@ -26,6 +26,7 @@ transcript plus a metadata sidecar to a target directory.
 git clone git@github.com:smartwatermelon/huddle-transcribe.git
 ln -s "$(pwd)/huddle-transcribe/huddle-transcribe" ~/.local/bin/huddle-transcribe
 ln -s "$(pwd)/huddle-transcribe/huddle-watch" ~/.local/bin/huddle-watch
+ln -s "$(pwd)/huddle-transcribe/huddle-mic-guard" ~/.local/bin/huddle-mic-guard
 ```
 
 Ensure `~/.local/bin` is on your `PATH`.
@@ -228,6 +229,55 @@ Environment overrides, mainly for testing: `HUDDLE_DB`,
 into SQL and also evaluated arithmetically, so anything else is rejected at
 startup rather than trusted.
 
+## Recorder-still-running alert (`huddle-mic-guard`)
+
+MacWhisper notices when a Slack huddle ends, but it only offers a "Finish
+Recording" prompt, and that prompt can disappear. The recording then goes on
+capturing the room. `huddle-mic-guard` watches for that and raises a modal
+alert: "Huddle ended — MacWhisper is still recording". It only alerts. It
+never stops MacWhisper or touches Slack.
+
+Every 30 seconds it reads the last 4 hours of coreaudiod's microphone-client
+events (`log show`) and alerts when all of these are true:
+
+1. Slack's microphone (its "Slack Helper" process) was released at least 60 s
+   ago and has not been taken again. Shorter drops are flaps, not endings.
+2. MacWhisper took the microphone during that huddle.
+3. MacWhisper is still running.
+4. MacWhisper's database has no recording that finished after MacWhisper
+   took the microphone. The finish time is `recordedmeeting.dateCreated`
+   (or `systemaudiorecording.dateCreated`), which is when capture stopped.
+
+MacWhisper releasing the microphone is **not** used as "recording stopped".
+On 2026-09-24 MacWhisper's Bluetooth mic dropped 36 s after the huddle ended.
+MacWhisper released it, then kept recording on a fallback mic for 25 more
+minutes.
+
+One huddle end alerts at most 3 times, 5 minutes apart. A huddle that ended
+more than 2 hours ago is ignored. State is in
+`~/.local/state/huddle-transcribe/mic-guard-state`, and the log is
+`~/Library/Logs/huddle-transcribe-mic-guard.log`.
+
+```bash
+huddle-mic-guard --dry-run     # report what a check would do; alerts nothing
+huddle-mic-guard --install     # writes and loads the LaunchAgent (every 30 s)
+huddle-mic-guard --status      # report agent, state file, and log
+huddle-mic-guard --uninstall   # unloads and removes the LaunchAgent
+```
+
+The LaunchAgent sets `AbandonProcessGroup`. Without it, launchd kills the
+job's leftover processes when the job exits, which would close the alert as
+soon as it appeared. `log show` was verified only from an admin account.
+Whether a standard user can read coreaudiod's log is not confirmed.
+
+Settings, each read from the environment: `HUDDLE_GUARD_WINDOW_MINUTES`
+(240), `HUDDLE_GUARD_SETTLE_SECONDS` (60), `HUDDLE_GUARD_REALERT_SECONDS`
+(300), `HUDDLE_GUARD_MAX_ALERTS` (3), `HUDDLE_GUARD_MAX_AGE_MINUTES` (120),
+and `HUDDLE_GUARD_POLL_INTERVAL` (30, read by `--install` only). An unset
+variable takes the default; an empty or non-numeric one is an error.
+`HUDDLE_DB`, `HUDDLE_NO_NOTIFY`, and `HUDDLE_NOTIFY_BIN` work as they do for
+`huddle-watch`.
+
 ## Configuration
 
 Output directory defaults to a `transcripts/` folder inside the user's
@@ -299,8 +349,8 @@ Two behaviors are deliberate and worth knowing before use:
 There is no build step. Before committing:
 
 ```bash
-shellcheck -S info huddle-transcribe huddle-watch tests/run-tests.sh
-shfmt -i 2 -ci -d huddle-transcribe huddle-watch tests/run-tests.sh
+shellcheck -S info huddle-transcribe huddle-watch huddle-mic-guard tests/run-tests.sh
+shfmt -i 2 -ci -d huddle-transcribe huddle-watch huddle-mic-guard tests/run-tests.sh
 ./tests/run-tests.sh
 ```
 
@@ -313,7 +363,9 @@ transcription runs: the readiness predicate (each column gating on its own),
 first-run seeding, dedupe, the attempt cap, the lock, `HUDDLE_MIN_DURATION`
 validation, state-file corruption handling, and notification content.
 Notifications are routed to a stub via `HUDDLE_NOTIFY_BIN`, so running the
-suite never posts a desktop alert. It does not cover the real `mw` binary's
+suite never posts a desktop alert. `huddle-mic-guard` replays a real day's
+coreaudiod events through stub `log` and `ps` commands at a fixed "now". It
+does not cover the real `mw` binary's
 own behavior, nor launchd's actual scheduling. CI runs the same three
 commands.
 
