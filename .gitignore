@@ -6,3 +6,4 @@
 # in which case they keep meeting content from being committed.
 huddle-transcripts/
 *.meta.json
+AGENTS.md
